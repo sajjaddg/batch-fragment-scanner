@@ -12,6 +12,9 @@ XRAY_PATH="$SCRIPT_DIR/xray"
 CONFIG_PATH="$SCRIPT_DIR/config.json"
 LOG_FILE="$SCRIPT_DIR/pings.txt"
 
+DEFAULT_HTTP_PROXY_PORT=$(jq -r '.inbounds[] | select(.tag == "http") | .port' "$CONFIG_PATH")
+
+
 # Create pings.txt if it does not exist
 if [[ ! -f $LOG_FILE ]]; then
     touch "$LOG_FILE"
@@ -19,13 +22,13 @@ fi
 
 # Prompt user for input values with defaults
 read -p "Enter the number of instances (default is 10): " InstancesInput
-read -p "Enter the timeout for each ping test in seconds (default is 10): " TimeoutSecInput
-read -p "Enter the HTTP proxy port (default is 10809): " HTTP_PROXY_PORTInput
+read -p "Enter the timeout for each ping test in seconds (default is 3): " TimeoutSecInput
+read -p "Enter the HTTP proxy port (default is $DEFAULT_HTTP_PROXY_PORT): " HTTP_PROXY_PORTInput
 
 # Set default values if inputs are empty
 Instances=${InstancesInput:-10}
-TimeoutSec=${TimeoutSecInput:-10}
-HTTP_PROXY_PORT=${HTTP_PROXY_PORTInput:-10809}
+TimeoutSec=${TimeoutSecInput:-3}
+HTTP_PROXY_PORT=${HTTP_PROXY_PORTInput:-$DEFAULT_HTTP_PROXY_PORT}
 
 # HTTP Proxy server address
 HTTP_PROXY_SERVER="127.0.0.1"
@@ -62,16 +65,17 @@ modify_config() {
 
 # Function to stop the Xray process
 stop_xray_process() {
-    pkill -f xray || echo "Xray process not found."
+    kill $(lsof -t -i :$HTTP_PROXY_PORT) || echo "Xray process not found."
 }
 
 # Function to perform HTTP requests with proxy and measure response time
 send_http_request() {
     local pingCount=$1
     local timeout=$((TimeoutSec * 1000))  # Convert seconds to milliseconds
-    local url="http://google.com"
+    local url="https://www.youtube.com/"
 
     local totalTime=0
+    local successfulPings=0
     local individualTimes=()
 
     for ((i = 1; i <= pingCount; i++)); do
@@ -83,6 +87,7 @@ send_http_request() {
             echo "Elapsed time: ${elapsedTime} ms"
             totalTime=$(echo "$totalTime + $elapsedTime" | bc)
             individualTimes+=("$elapsedTime")
+            ((successfulPings++))
         else
             echo "Error: Request failed."
             individualTimes+=(-1)  # Mark failed requests with -1
@@ -91,7 +96,12 @@ send_http_request() {
         sleep 1
     done
 
-    local averagePing=$(echo "$totalTime / $pingCount" | bc -l)
+    if ((successfulPings > 0)); then
+        local averagePing=$(echo "$totalTime / $successfulPings" | bc -l)
+    else
+        local averagePing=0
+    fi
+
     echo "Average ping time: ${averagePing} ms"
 
     # Log individual ping times to pings.txt
@@ -116,7 +126,7 @@ for ((i = 0; i < Instances; i++)); do
 
     "$XRAY_PATH" -c "$CONFIG_PATH" &
 
-    sleep 10
+    sleep 1
 
     echo "Testing with packets=$packets, length=$length, interval=$interval..." >> "$LOG_FILE"
     averagePing=$(send_http_request 3)
@@ -127,28 +137,29 @@ for ((i = 0; i < Instances; i++)); do
     sleep 1
 done
 
-# Filter out entries with an average response time of 0 ms
-validResults=()
+declare -A validResults
 for entry in "${topThree[@]}"; do
     avgTime=$(echo "$entry" | cut -d'|' -f1)
     if (( $(echo "$avgTime > 0" | bc -l) )); then
-        validResults+=("$entry")
+        validResults["$avgTime"]=$(echo "$entry" | cut -d'|' -f2-4)
     fi
 done
 
-# Sort the top three list by average response time in ascending order
-IFS=$'\n' sortedTopThree=($(sort -t'|' -k1,1n <<<"${validResults[*]}"))
-unset IFS
+# Sort the average ping times and get the top three
+sortedKeys=($(for k in "${!validResults[@]}"; do echo "$k"; done | sort -n))
 
 # Display the top three lowest average response times along with their corresponding fragment values
 echo "Top three lowest average response times:"
-for entry in "${sortedTopThree[@]:0:3}"; do
-    avgTime=$(echo "$entry" | cut -d'|' -f1)
-    packets=$(echo "$entry" | cut -d'|' -f2)
-    length=$(echo "$entry" | cut -d'|' -f3)
-    interval=$(echo "$entry" | cut -d'|' -f4)
-    echo "Average Response Time: ${avgTime} ms"
-    echo "Packets: $packets, Length: $length, Interval: $interval"
+for i in {0..2}; do
+    avgTime=${sortedKeys[$i]}
+    if [[ -n "$avgTime" ]]; then
+        params=${validResults["$avgTime"]}
+        packets=$(echo "$params" | cut -d'|' -f1)
+        length=$(echo "$params" | cut -d'|' -f2)
+        interval=$(echo "$params" | cut -d'|' -f3)
+        echo "Average Response Time: ${avgTime} ms"
+        echo "Testing with packets=$packets, length=$length, interval=$interval"
+    fi
 done
 
 # Stop Xray process if running
