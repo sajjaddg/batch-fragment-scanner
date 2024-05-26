@@ -75,7 +75,6 @@ send_http_request() {
     local url="https://www.youtube.com/"
 
     local totalTime=0
-    local successfulPings=0
     local individualTimes=()
 
     for ((i = 1; i <= pingCount; i++)); do
@@ -87,7 +86,6 @@ send_http_request() {
             echo "Elapsed time: ${elapsedTime} ms"
             totalTime=$(echo "$totalTime + $elapsedTime" | bc)
             individualTimes+=("$elapsedTime")
-            ((successfulPings++))
         else
             echo "Error: Request failed."
             individualTimes+=(-1)  # Mark failed requests with -1
@@ -96,12 +94,7 @@ send_http_request() {
         sleep 1
     done
 
-    if ((successfulPings > 0)); then
-        local averagePing=$(echo "$totalTime / $successfulPings" | bc -l)
-    else
-        local averagePing=0
-    fi
-
+    local averagePing=$(echo "$totalTime / $pingCount" | bc -l)
     echo "Average ping time: ${averagePing} ms"
 
     # Log individual ping times to pings.txt
@@ -136,30 +129,27 @@ for ((i = 0; i < Instances; i++)); do
 
     sleep 1
 done
-
-declare -A validResults
+validResults=()
 for entry in "${topThree[@]}"; do
     avgTime=$(echo "$entry" | cut -d'|' -f1)
     if (( $(echo "$avgTime > 0" | bc -l) )); then
-        validResults["$avgTime"]=$(echo "$entry" | cut -d'|' -f2-4)
+        validResults+=("$entry")
     fi
 done
 
-# Sort the average ping times and get the top three
-sortedKeys=($(for k in "${!validResults[@]}"; do echo "$k"; done | sort -n))
+# Sort the top three list by average response time in ascending order
+IFS=$'\n' sortedTopThree=($(sort -t'|' -k1,1n <<<"${validResults[*]}"))
+unset IFS
 
 # Display the top three lowest average response times along with their corresponding fragment values
 echo "Top three lowest average response times:"
-for i in {0..2}; do
-    avgTime=${sortedKeys[$i]}
-    if [[ -n "$avgTime" ]]; then
-        params=${validResults["$avgTime"]}
-        packets=$(echo "$params" | cut -d'|' -f1)
-        length=$(echo "$params" | cut -d'|' -f2)
-        interval=$(echo "$params" | cut -d'|' -f3)
-        echo "Average Response Time: ${avgTime} ms"
-        echo "Testing with packets=$packets, length=$length, interval=$interval"
-    fi
+for entry in "${sortedTopThree[@]:0:3}"; do
+    avgTime=$(echo "$entry" | cut -d'|' -f1)
+    packets=$(echo "$entry" | cut -d'|' -f2)
+    length=$(echo "$entry" | cut -d'|' -f3)
+    interval=$(echo "$entry" | cut -d'|' -f4)
+    echo "Average Response Time: ${avgTime} ms"
+    echo "Packets: $packets, Length: $length, Interval: $interval"
 done
 
 # Stop Xray process if running
